@@ -2,9 +2,97 @@ import boto3
 import os, json
 import logging
 import google.generativeai as genai
+import urllib3
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)   
+# Configure logging for CloudWatch
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
+
+# Initialize HTTP client for Discord webhook
+http = urllib3.PoolManager()
+
+def send_to_discord(webhook_url, result):
+    """Send scan results to Discord webhook with formatted embed
+    
+    Args:
+        webhook_url (str): Discord webhook URL
+        result (dict): Scan results to send
+    """
+    try:
+        # Determine embed color based on findings
+        if result['unencrypted_buckets'] > 0:
+            color = 15158332  # Red
+            status_emoji = "🚨"
+            title = "S3 Security Scan - Action Required"
+        else:
+            color = 3066993  # Green
+
+            title = "S3 Security Scan - All Clear"
+        
+        # Build unencrypted bucket list
+        unencrypted_list = [b['bucket_name'] for b in result['scan_results'] 
+                           if b['encryption_status'] == "Not Enabled"]
+        
+        # Create embed fields
+        fields = [
+            {
+                "name": "📊 Summary",
+                "value": f"**Total Buckets:** {result['total_buckets']}\n"
+                        f"**Encrypted:** {result['encrypted_buckets']} ✅\n"
+                        f"**Unencrypted:** {result['unencrypted_buckets']} ⚠️",
+                "inline": False
+            }
+        ]
+        
+        # Add unencrypted buckets if any
+        if unencrypted_list:
+            bucket_list = '\n'.join([f"• `{b}`" for b in unencrypted_list[:10]])  # Limit to 10
+            if len(unencrypted_list) > 10:
+                bucket_list += f"\n• ... and {len(unencrypted_list) - 10} more"
+            
+            fields.append({
+                "name": "⚠️ Unencrypted Buckets",
+                "value": bucket_list,
+                "inline": False
+            })
+        
+        # Add AI analysis
+        if result['ai_analysis'] and not result['ai_analysis'].startswith("AI analysis"):
+            fields.append({
+                "name": "🤖 AI Security Analysis",
+                "value": result['ai_analysis'][:1024],  # Discord field limit
+                "inline": False
+            })
+        
+        # Create Discord message
+        message = {
+            "embeds": [{
+                "title": f"{status_emoji} {title}",
+                "color": color,
+                "fields": fields,
+                "footer": {
+                    "text": "AWS S3 Security Scanner • Powered by Lambda + Gemini AI"
+                },
+                "timestamp": None  # Discord will use current time
+            }]
+        }
+        
+        # Send to Discord
+        encoded_data = json.dumps(message).encode('utf-8')
+        response = http.request(
+            'POST',
+            webhook_url,
+            body=encoded_data,
+            headers={'Content-Type': 'application/json'}
+        )
+        
+        if response.status == 204:
+            logger.info("Successfully sent results to Discord")
+        else:
+            logger.warning(f"Discord webhook returned status {response.status}")
+            
+    except Exception as e:
+        logger.error(f"Failed to send to Discord: {e}")
 
 def lambda_handler(event, context):
     """Scan S3 buckets for encryption and use AI to explain risks
@@ -53,7 +141,6 @@ def lambda_handler(event, context):
 
 
     # Count unencrypted buckets
-
     unencrypted_buckets = [b for b in results if b['encryption_status'] == "Not Enabled"]
     unencrypted_count = len(unencrypted_buckets)
     logger.info(f"Total unencrypted buckets: {unencrypted_count}")
@@ -65,7 +152,10 @@ def lambda_handler(event, context):
         ai_analysis = "AI analysis skipped: GOOGLE_API_KEY not configured"
     else:
         genai.configure(api_key=api_key)
-        model = genai.GenerativeModel("gemini-2.0-flash-exp")
+        model = genai.GenerativeModel("gemini-2.5-flash-lite")
+
+        # Fix: Extract bucket names properly
+        unencrypted_bucket_names = [b['bucket_name'] for b in unencrypted_buckets]
 
         prompt = f"""You are an AWS security expert. Analyze this S3 encryption scan and provide a brief security assessment.
 
@@ -74,7 +164,7 @@ def lambda_handler(event, context):
                     - Total Buckets: {len(buckets)}
                     - Encrypted: {len(buckets) - unencrypted_count}
                     - Unencrypted: {unencrypted_count}
-                    - Unencrypted Bucket Names: {', '.join(unencrypted_buckets) if unencrypted_buckets else 'None'}
+                    - Unencrypted Bucket Names: {', '.join(unencrypted_bucket_names) if unencrypted_bucket_names else 'None'}
 
                     Provide a 2-3 sentence analysis:
                     1. What's the security risk of unencrypted buckets?
@@ -103,10 +193,14 @@ def lambda_handler(event, context):
 
     logger.info(f"\nScan complete: {unencrypted_count}/{len(buckets)} buckets need encryption")
 
+    # Send results to Discord
+    webhook_url = os.environ.get('DISCORD_WEBHOOK_URL')
+    if webhook_url:
+        send_to_discord(webhook_url, result)
+    else:
+        logger.warning("DISCORD_WEBHOOK_URL not configured, skipping Discord notification")
+
     return {
         'statusCode': 200,
         'body': json.dumps(result)
     }
-
-
-

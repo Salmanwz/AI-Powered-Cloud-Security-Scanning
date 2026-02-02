@@ -1,0 +1,24 @@
+# Terraform
+**/.terraform/
+**/.terraform.lock.hcl
+*.tfstate
+*.tfstate.*
+*.tfvars
+crash.log
+override.tf
+*_override.tf
+
+# Lambda
+*.zip
+package/
+venv/
+__pycache__/
+
+# Sensitive
+.env
+*.pem
+*.key
+response.json
+
+# Folder
+python/
