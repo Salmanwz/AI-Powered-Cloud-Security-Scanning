@@ -4,7 +4,7 @@ An automated security monitoring solution that scans AWS S3 buckets for encrypti
 
 ## 🏗️ Architecture
 
-![Architecture Diagram](img/Project Diagrams - AI CSPM using AI.png)
+![Architecture Diagram](/img/Project%20Diagrams%20-%20AI%20CSPM%20using%20AI.png)
 
 **Workflow:**
 - EventBridge triggers Lambda every 12 hours
